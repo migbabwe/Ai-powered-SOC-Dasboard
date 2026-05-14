@@ -47,8 +47,7 @@ Alert Feed tab — click any alert row to slide open the AI analysis panel on th
 Devices tab — per-agent cards showing status, alert count, and worst-case severity
 
 
-Backend — 11 files
-FileRolemain.pyFastAPI app, CORS config, router mounting, lifespan hookconfig.pyPydantic-settings — all secrets from .env, never hardcodedmodels.pyPydantic schemas: RawWazuhAlert, AIAnalysis, EnrichedAlert, DashboardStats, Deviceservices/wazuh.pyWazuh JWT auth, alert fetch, auto-fallback to 6 realistic mock alerts when no credsservices/openai_analysis.pyGPT-4o mini with JSON mode, structured prompt builder, rule-based fallback if API key missingrouters/alerts.pyGET /api/alerts (paginated, filtered), GET /api/alerts/stats, POST /api/alerts/sync (background task), GET /api/alerts/{id}routers/analysis.pyPOST /api/analysis/analyze — on-demand AI triage for any alertrouters/devices.pyGET /api/devices — agent inventory derived from alert datarouters/auth.pyGET /api/auth/me — Supabase JWT validationrequirements.txtPinned deps: FastAPI, OpenAI SDK, Supabase, httpx, pydantic-settingsPROJECT_STRUCTURE.mdFull folder map, Next.js API route proxy, TypeScript API client, Supabase schema SQL, Railway + Vercel deploy config
+
 
 Key architectural decisions
 Mock-first, prod-ready — Wazuh and OpenAI both fall back gracefully when not configured, so you can develop and demo without live credentials.
