@@ -1,748 +1,804 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useCallback } from "react";
+import { AlertTriangle, Shield, Activity, Server, Search, RefreshCw, ChevronRight, X, Zap, Eye, Clock, TrendingUp, Wifi, WifiOff, Terminal, Lock } from "lucide-react";
 
-// ─── Mock Data ───────────────────────────────────────────────────────────────
+// ─── Mock data (mirrors backend mock alerts) ───────────────────────────────
 const MOCK_ALERTS = [
   {
-    id: "ALT-001",
-    timestamp: "2026-05-12T09:14:33Z",
-    rule_id: "5710",
-    rule_description: "SSH brute force attempt detected",
-    agent_name: "prod-web-01",
-    agent_ip: "10.0.1.45",
-    level: 12,
-    groups: ["authentication", "ssh"],
-    full_log: "sshd[1234]: Failed password for root from 185.234.218.40 port 52341 ssh2",
+    id: "alert_001", timestamp: "2024-01-15T14:32:01.000Z",
+    rule_id: "5503", rule_level: 10, rule_description: "User login attempt (SSH) — brute force pattern",
+    agent_name: "prod-web-01", agent_ip: "10.0.1.10", location: "/var/log/auth.log",
+    analysis: {
+      severity: "HIGH",
+      summary: "A brute-force SSH login attack originating from a known Tor exit node (185.220.101.47) targeted the root account on your primary web server. Over 200 failed attempts were logged in a 5-minute window.",
+      business_impact: "If successful, an attacker gains root access to your production web server, potentially exposing all customer data and enabling full infrastructure takeover.",
+      recommended_actions: [
+        "Immediately block IP 185.220.101.47 at the firewall level",
+        "Disable root SSH login in /etc/ssh/sshd_config (PermitRootLogin no)",
+        "Enable SSH key-based auth only and disable password authentication",
+        "Review /var/log/auth.log for any successful logins in the past 24h",
+        "Consider deploying fail2ban or CrowdSec for automated blocking",
+      ],
+      confidence: 0.94,
+    },
   },
   {
-    id: "ALT-002",
-    timestamp: "2026-05-12T09:08:11Z",
-    rule_id: "31151",
-    rule_description: "Web attack: SQL injection attempt",
-    agent_name: "prod-api-02",
-    agent_ip: "10.0.1.46",
-    level: 10,
-    groups: ["web", "attack"],
-    full_log: "GET /api/users?id=1%27%20OR%20%271%27%3D%271 HTTP/1.1",
+    id: "alert_002", timestamp: "2024-01-15T14:28:15.000Z",
+    rule_id: "31103", rule_level: 12, rule_description: "Web attack: SQL injection attempt detected",
+    agent_name: "prod-web-01", agent_ip: "10.0.1.10", location: "/var/log/nginx/access.log",
+    analysis: {
+      severity: "CRITICAL",
+      summary: "A SQL injection attack was detected against your public API endpoint. The attacker attempted to extract all user records using a classic UNION-based injection payload. The request returned a 200 status, suggesting partial success.",
+      business_impact: "A successful SQL injection could expose your entire user database including PII, credentials, and payment data — triggering GDPR/PCI-DSS breach notification obligations.",
+      recommended_actions: [
+        "URGENT: Check database query logs for data exfiltration immediately",
+        "Block IP 203.0.113.42 and audit all requests from this source in the last 7 days",
+        "Review the /api/users endpoint for parameterized query usage",
+        "Deploy a WAF rule to block SQLi patterns",
+        "Notify your DPO if any data exposure is confirmed",
+      ],
+      confidence: 0.97,
+    },
   },
   {
-    id: "ALT-003",
-    timestamp: "2026-05-12T08:55:02Z",
-    rule_id: "40111",
-    rule_description: "Suspicious PowerShell execution",
-    agent_name: "dev-workstation-07",
-    agent_ip: "10.0.2.17",
-    level: 14,
-    groups: ["windows", "malware"],
-    full_log: "powershell.exe -EncodedCommand SQBuAHYAbwBrAGUALQBFAHgAcAByAGUAcwBzAGkAbwBuACAAJABjAA==",
+    id: "alert_003", timestamp: "2024-01-15T14:20:44.000Z",
+    rule_id: "554", rule_level: 7, rule_description: "File added to the system — suspicious binary",
+    agent_name: "prod-db-01", agent_ip: "10.0.1.20", location: "syscheck",
+    analysis: {
+      severity: "HIGH",
+      summary: "Netcat (nc) was added to /usr/bin on your production database server as root. Netcat is a networking utility commonly used by attackers to establish backdoor connections and exfiltrate data.",
+      business_impact: "An attacker may be establishing a persistent backdoor on your database server, enabling future data theft without re-exploitation.",
+      recommended_actions: [
+        "Remove /usr/bin/nc immediately and check for active connections: netstat -tlnp",
+        "Check bash history for all users: cat /root/.bash_history",
+        "Audit recent logins: last -a | head -20",
+        "Run a full rootkit scan with chkrootkit or rkhunter",
+        "Isolate the host from the network pending full forensic investigation",
+      ],
+      confidence: 0.88,
+    },
   },
   {
-    id: "ALT-004",
-    timestamp: "2026-05-12T08:42:18Z",
-    rule_id: "2502",
-    rule_description: "User account created",
-    agent_name: "prod-db-01",
-    agent_ip: "10.0.1.50",
-    level: 6,
-    groups: ["account", "audit"],
-    full_log: "useradd[5823]: new user: name=svc_backup, UID=1002, GID=1002",
+    id: "alert_004", timestamp: "2024-01-15T14:15:09.000Z",
+    rule_id: "40101", rule_level: 15, rule_description: "Rootkit detected: suspicious kernel module loaded",
+    agent_name: "prod-db-01", agent_ip: "10.0.1.20", location: "rootcheck",
+    analysis: {
+      severity: "CRITICAL",
+      summary: "Diamorphine, a well-known Linux rootkit that hides processes and files from the OS, was detected on your production database server. This indicates a complete system compromise — the attacker has kernel-level control.",
+      business_impact: "Full system compromise at kernel level. The attacker can hide all activity, intercept network traffic, steal encryption keys, and access all database contents invisibly. This is a P0 incident.",
+      recommended_actions: [
+        "IMMEDIATE: Isolate prod-db-01 from the network NOW — pull the virtual NIC",
+        "Do NOT attempt to clean — the system is untrustworthy. Preserve for forensics then rebuild",
+        "Initiate your incident response plan and notify CISO",
+        "Rotate all database credentials, API keys, and secrets immediately",
+        "Restore from the last known-good backup after rebuilding the host",
+        "Conduct a full compromise assessment across all systems that touched this host",
+      ],
+      confidence: 0.99,
+    },
   },
   {
-    id: "ALT-005",
-    timestamp: "2026-05-12T08:31:44Z",
-    rule_id: "87102",
-    rule_description: "Outbound connection to known C2 IP",
-    agent_name: "dev-workstation-03",
-    agent_ip: "10.0.2.11",
-    level: 15,
-    groups: ["network", "malware", "c2"],
-    full_log: "OUTBOUND TCP 10.0.2.11:49820 -> 193.42.33.17:443 ESTABLISHED",
+    id: "alert_005", timestamp: "2024-01-15T14:10:33.000Z",
+    rule_id: "87103", rule_level: 6, rule_description: "M365: Unusual login location detected",
+    agent_name: "m365-connector", agent_ip: "10.0.1.5", location: "ms365",
+    analysis: {
+      severity: "MEDIUM",
+      summary: "Your CFO's Microsoft 365 account logged in from Russia (IP 45.33.32.156) — a location never previously seen for this user. This could indicate account compromise via phishing or credential stuffing.",
+      business_impact: "If the CFO account is compromised, the attacker gains access to sensitive financial data, executive communications, and may be able to approve fraudulent wire transfers.",
+      recommended_actions: [
+        "Contact the CFO directly (not by email) to confirm if they are traveling",
+        "If not confirmed legitimate: revoke all active sessions in Azure AD immediately",
+        "Enable MFA if not already active on this account",
+        "Review mailbox rules for any auto-forwarding rules created recently",
+        "Check for any large file downloads or SharePoint access in the last 24h",
+      ],
+      confidence: 0.81,
+    },
   },
   {
-    id: "ALT-006",
-    timestamp: "2026-05-12T08:20:09Z",
-    rule_id: "5502",
-    rule_description: "Failed sudo attempt",
-    agent_name: "prod-web-02",
-    agent_ip: "10.0.1.47",
-    level: 5,
-    groups: ["sudo", "authentication"],
-    full_log: "sudo: user jenkins NOT in sudoers file; TTY=pts/1",
+    id: "alert_006", timestamp: "2024-01-15T14:05:22.000Z",
+    rule_id: "2932", rule_level: 5, rule_description: "Firewall dropped inbound RDP attempt",
+    agent_name: "fw-edge-01", agent_ip: "10.0.0.1", location: "firewall",
+    analysis: {
+      severity: "LOW",
+      summary: "Your edge firewall blocked an inbound RDP (port 3389) connection attempt from an external IP. This is common internet background noise but worth logging for trend analysis.",
+      business_impact: "Currently blocked with no immediate risk. However, repeated attempts may indicate targeted reconnaissance of your perimeter.",
+      recommended_actions: [
+        "No immediate action required — the firewall correctly blocked the attempt",
+        "Ensure RDP is not exposed directly to the internet on any host",
+        "If RDP access is needed externally, use a VPN or jump host instead",
+        "Monitor for escalating frequency from this IP range",
+      ],
+      confidence: 0.92,
+    },
   },
 ];
 
-const AI_RESPONSES = {
-  "ALT-001": {
-    severity: "HIGH",
-    summary: "A brute force SSH attack is actively targeting the root account on prod-web-01 from external IP 185.234.218.40. Multiple failed login attempts suggest an automated credential stuffing tool.",
-    business_impact: "If successful, the attacker gains root access to a production web server — enabling data exfiltration, ransomware deployment, or use as a pivot point into the internal network.",
-    recommended_action: [
-      "Immediately block 185.234.218.40 at the firewall and WAF level",
-      "Disable root SSH login in /etc/ssh/sshd_config (PermitRootLogin no)",
-      "Enforce SSH key-based authentication and disable password auth",
-      "Review /var/log/auth.log for any successful logins from this IP",
-      "Enable fail2ban or AWS GuardDuty SSH anomaly detection",
-    ],
-  },
-  "ALT-002": {
-    severity: "HIGH",
-    summary: "A SQL injection attack was detected against the /api/users endpoint on prod-api-02. The attacker is attempting to bypass authentication using a classic OR 1=1 injection payload.",
-    business_impact: "Successful exploitation could expose the entire user database, including PII and credentials. This may trigger GDPR/CCPA breach notification obligations.",
-    recommended_action: [
-      "Validate that all API endpoints use parameterized queries or ORM",
-      "Block the source IP immediately via WAF rules",
-      "Review API logs for any successful 200 responses to this pattern",
-      "Run a DAST scan on the API surface immediately",
-      "Enable WAF SQL injection ruleset if not already active",
-    ],
-  },
-  "ALT-003": {
-    severity: "CRITICAL",
-    summary: "A Base64-encoded PowerShell command was executed on a developer workstation. This is a hallmark of fileless malware, often used to download payloads or establish persistence without writing to disk.",
-    business_impact: "Developer workstations typically have broad code repository access and may hold API keys, secrets, and credentials. Compromise could cascade into production environments via CI/CD pipelines.",
-    recommended_action: [
-      "Immediately isolate dev-workstation-07 from the network",
-      "Decode and analyze the Base64 payload: SQBuAHYAbwBrAGUALQBFAHgAcAByAGUAcwBzAGkAbwBuACAAJABjAA==",
-      "Run a full EDR scan and collect memory forensics",
-      "Rotate all secrets and API keys accessible from this machine",
-      "Review git commit history for any unauthorized code changes",
-      "Escalate to IR team immediately",
-    ],
-  },
-  "ALT-004": {
-    severity: "MEDIUM",
-    summary: "A new service account (svc_backup) was created on the production database server. While this may be legitimate, unauthorized account creation is a common persistence technique.",
-    business_impact: "Unauthorized accounts provide persistent access that survives password changes and may be used for long-term data exfiltration from the database server.",
-    recommended_action: [
-      "Verify with the DBA team whether this account creation was authorized",
-      "Check the account's assigned permissions and groups",
-      "Review who initiated the useradd command (check sudo/audit logs)",
-      "Ensure svc_backup follows least-privilege principles",
-    ],
-  },
-  "ALT-005": {
-    severity: "CRITICAL",
-    summary: "An outbound connection was established from a developer workstation to 193.42.33.17:443, a known Command & Control (C2) server associated with the LockBit ransomware group. This indicates an active malware infection.",
-    business_impact: "Active C2 communication means an attacker has live control of the workstation. Ransomware deployment, lateral movement, and data theft may already be in progress across the network.",
-    recommended_action: [
-      "IMMEDIATE: Isolate dev-workstation-03 from all network segments NOW",
-      "Block 193.42.33.17 at all egress points — firewall, DNS, proxy",
-      "Check all other hosts for connections to this IP in the last 72 hours",
-      "Engage Incident Response team — treat this as an active breach",
-      "Preserve disk image for forensic analysis before any remediation",
-      "Notify legal/compliance team for potential breach disclosure requirements",
-    ],
-  },
-  "ALT-006": {
-    severity: "LOW",
-    summary: "The jenkins service account attempted to run a sudo command on prod-web-02 but was blocked — the account is not in the sudoers file. This may indicate misconfiguration or a probing attempt.",
-    business_impact: "Low immediate risk as the attempt was blocked. However, if the jenkins account is compromised, repeated probing may indicate an attacker testing privilege escalation paths.",
-    recommended_action: [
-      "Review whether jenkins requires sudo access for any legitimate pipeline tasks",
-      "Audit recent jenkins pipeline runs for unexpected commands",
-      "Ensure the jenkins account follows least-privilege principles",
-    ],
-  },
+const SEVERITY_CONFIG = {
+  CRITICAL: { color: "#FF3B3B", bg: "rgba(255,59,59,0.12)", border: "rgba(255,59,59,0.3)", glow: "rgba(255,59,59,0.4)", label: "CRITICAL", dot: "#FF3B3B" },
+  HIGH:     { color: "#FF8C00", bg: "rgba(255,140,0,0.12)",  border: "rgba(255,140,0,0.3)",  glow: "rgba(255,140,0,0.4)",  label: "HIGH",     dot: "#FF8C00" },
+  MEDIUM:   { color: "#FFD700", bg: "rgba(255,215,0,0.10)",  border: "rgba(255,215,0,0.3)",  glow: "rgba(255,215,0,0.3)",  label: "MEDIUM",   dot: "#FFD700" },
+  LOW:      { color: "#00C8FF", bg: "rgba(0,200,255,0.08)",  border: "rgba(0,200,255,0.25)", glow: "rgba(0,200,255,0.3)",  label: "LOW",      dot: "#00C8FF" },
+  INFO:     { color: "#6B7280", bg: "rgba(107,114,128,0.1)", border: "rgba(107,114,128,0.2)",glow: "rgba(107,114,128,0.2)",label: "INFO",     dot: "#6B7280" },
 };
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-function getSeverityFromLevel(level) {
-  if (level >= 14) return "CRITICAL";
-  if (level >= 10) return "HIGH";
-  if (level >= 6) return "MEDIUM";
-  return "LOW";
+function timeAgo(ts) {
+  const diff = (Date.now() - new Date(ts)) / 1000;
+  if (diff < 60) return `${Math.floor(diff)}s ago`;
+  if (diff < 3600) return `${Math.floor(diff/60)}m ago`;
+  if (diff < 86400) return `${Math.floor(diff/3600)}h ago`;
+  return `${Math.floor(diff/86400)}d ago`;
 }
 
-const SEV_CONFIG = {
-  CRITICAL: { color: "#ff3b5c", bg: "rgba(255,59,92,0.12)", glow: "0 0 12px rgba(255,59,92,0.4)", label: "CRITICAL" },
-  HIGH:     { color: "#ff8c00", bg: "rgba(255,140,0,0.12)",  glow: "0 0 12px rgba(255,140,0,0.35)",  label: "HIGH" },
-  MEDIUM:   { color: "#f5c518", bg: "rgba(245,197,24,0.12)", glow: "0 0 12px rgba(245,197,24,0.3)",  label: "MEDIUM" },
-  LOW:      { color: "#22d3a5", bg: "rgba(34,211,165,0.12)", glow: "0 0 12px rgba(34,211,165,0.3)",  label: "LOW" },
-};
-
-function fmt(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-}
-
-function fmtDate(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-}
-
-function PulsingDot({ color }) {
-  return (
-    <span style={{ position: "relative", display: "inline-flex", width: 10, height: 10 }}>
-      <span style={{
-        position: "absolute", inset: 0, borderRadius: "50%",
-        background: color, opacity: 0.5,
-        animation: "ping 1.5s cubic-bezier(0,0,0.2,1) infinite"
-      }} />
-      <span style={{ width: 10, height: 10, borderRadius: "50%", background: color, display: "block" }} />
-    </span>
-  );
-}
-
-// ─── Components ───────────────────────────────────────────────────────────────
-
-function Sidebar({ page, setPage, alertCount }) {
-  const items = [
-    { id: "dashboard", icon: "⬡", label: "Dashboard" },
-    { id: "alerts", icon: "◈", label: "Alert Feed", badge: alertCount },
-    { id: "analysis", icon: "✦", label: "AI Analysis" },
-    { id: "devices", icon: "⬡", label: "Devices" },
+// ─── Sidebar ───────────────────────────────────────────────────────────────
+function Sidebar({ activeView, setActiveView }) {
+  const nav = [
+    { id: "dashboard", icon: Activity, label: "Overview" },
+    { id: "alerts",    icon: AlertTriangle, label: "Alert Feed" },
+    { id: "devices",   icon: Server, label: "Devices" },
+    { id: "analysis",  icon: Zap, label: "AI Analysis" },
   ];
   return (
     <aside style={{
-      width: 220, flexShrink: 0,
-      background: "linear-gradient(180deg, #0d1117 0%, #0a0e13 100%)",
-      borderRight: "1px solid rgba(255,255,255,0.05)",
+      width: 220, minHeight: "100vh", background: "#0A0C10",
+      borderRight: "1px solid rgba(255,255,255,0.06)",
       display: "flex", flexDirection: "column",
       fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
     }}>
       {/* Logo */}
-      <div style={{ padding: "28px 20px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
+      <div style={{ padding: "24px 20px 20px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{
-            width: 32, height: 32,
-            background: "linear-gradient(135deg, #00d4ff, #0066ff)",
-            borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center",
-            fontSize: 16, boxShadow: "0 0 16px rgba(0,212,255,0.4)"
-          }}>⚡</div>
-          <div>
-            <div style={{ color: "#fff", fontSize: 13, fontWeight: 700, letterSpacing: 1 }}>SENTINEL</div>
-            <div style={{ color: "#00d4ff", fontSize: 9, letterSpacing: 2, opacity: 0.8 }}>SOC PLATFORM</div>
+            width: 32, height: 32, borderRadius: 8,
+            background: "linear-gradient(135deg, #00C8FF, #0066FF)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 0 16px rgba(0,200,255,0.4)",
+          }}>
+            <Shield size={16} color="#fff" />
           </div>
-        </div>
-      </div>
-
-      {/* Status */}
-      <div style={{ padding: "14px 20px", borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "#22d3a5", letterSpacing: 1 }}>
-          <PulsingDot color="#22d3a5" />
-          MONITORING ACTIVE
+          <div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", letterSpacing: "0.05em" }}>SENTINEL</div>
+            <div style={{ fontSize: 9, color: "#00C8FF", letterSpacing: "0.15em" }}>AI · SOC</div>
+          </div>
         </div>
       </div>
 
       {/* Nav */}
       <nav style={{ flex: 1, padding: "12px 10px" }}>
-        {items.map(item => {
-          const active = page === item.id;
+        {nav.map(({ id, icon: Icon, label }) => {
+          const active = activeView === id;
           return (
-            <button key={item.id} onClick={() => setPage(item.id)} style={{
+            <button key={id} onClick={() => setActiveView(id)} style={{
               width: "100%", display: "flex", alignItems: "center", gap: 10,
               padding: "10px 12px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: active ? "rgba(0,212,255,0.08)" : "transparent",
-              borderLeft: active ? "2px solid #00d4ff" : "2px solid transparent",
-              color: active ? "#00d4ff" : "#6b7280",
-              fontSize: 12, letterSpacing: 0.5, marginBottom: 2,
-              transition: "all 0.15s ease", textAlign: "left",
+              marginBottom: 2,
+              background: active ? "rgba(0,200,255,0.1)" : "transparent",
+              color: active ? "#00C8FF" : "#6B7280",
+              fontSize: 12, fontWeight: active ? 600 : 400,
+              letterSpacing: "0.05em", transition: "all 0.15s ease",
+              borderLeft: active ? "2px solid #00C8FF" : "2px solid transparent",
             }}>
-              <span style={{ fontSize: 14 }}>{item.icon}</span>
-              <span style={{ flex: 1 }}>{item.label}</span>
-              {item.badge && (
-                <span style={{
-                  background: "#ff3b5c", color: "#fff", fontSize: 9,
-                  padding: "2px 6px", borderRadius: 10, fontWeight: 700,
-                }}>{item.badge}</span>
-              )}
+              <Icon size={15} />
+              {label}
             </button>
           );
         })}
       </nav>
 
-      {/* Footer */}
-      <div style={{ padding: "16px 20px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-        <div style={{ fontSize: 9, color: "#374151", letterSpacing: 1 }}>
-          <div style={{ color: "#4b5563", marginBottom: 2 }}>WAZUH CONNECTED</div>
-          <div>v4.7.2 · 6 agents</div>
+      {/* Status indicator */}
+      <div style={{ padding: "16px 20px", borderTop: "1px solid rgba(255,255,255,0.06)" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10, color: "#4B5563" }}>
+          <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22C55E", boxShadow: "0 0 6px #22C55E" }} />
+          WAZUH CONNECTED
+        </div>
+        <div style={{ fontSize: 9, color: "#374151", marginTop: 4, letterSpacing: "0.08em" }}>
+          LAST SYNC: 2m ago
         </div>
       </div>
     </aside>
   );
 }
 
-function SeverityBadge({ level, compact }) {
-  const sev = typeof level === "string" ? level : getSeverityFromLevel(level);
-  const cfg = SEV_CONFIG[sev];
+// ─── Stat card ─────────────────────────────────────────────────────────────
+function StatCard({ label, value, color, icon: Icon, sublabel }) {
+  return (
+    <div style={{
+      background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+      borderRadius: 12, padding: "20px 24px",
+      borderTop: `2px solid ${color}`,
+      position: "relative", overflow: "hidden",
+    }}>
+      <div style={{
+        position: "absolute", top: 0, right: 0, width: 80, height: 80,
+        background: `radial-gradient(circle at top right, ${color}15, transparent 70%)`,
+      }} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <div style={{ fontSize: 11, color: "#6B7280", letterSpacing: "0.1em", fontFamily: "monospace", marginBottom: 8 }}>
+            {label}
+          </div>
+          <div style={{ fontSize: 36, fontWeight: 700, color, lineHeight: 1, fontFamily: "monospace" }}>
+            {value}
+          </div>
+          {sublabel && <div style={{ fontSize: 10, color: "#4B5563", marginTop: 6 }}>{sublabel}</div>}
+        </div>
+        <div style={{
+          width: 36, height: 36, borderRadius: 8,
+          background: `${color}18`, border: `1px solid ${color}30`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+        }}>
+          <Icon size={16} color={color} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Severity badge ─────────────────────────────────────────────────────────
+function SeverityBadge({ severity, size = "sm" }) {
+  const cfg = SEVERITY_CONFIG[severity] || SEVERITY_CONFIG.INFO;
+  const pad = size === "lg" ? "6px 14px" : "3px 8px";
+  const fs = size === "lg" ? 11 : 9;
   return (
     <span style={{
-      display: "inline-flex", alignItems: "center", gap: 5,
-      background: cfg.bg, color: cfg.color,
-      border: `1px solid ${cfg.color}30`,
-      borderRadius: 5, padding: compact ? "2px 7px" : "3px 10px",
-      fontSize: compact ? 9 : 10, fontWeight: 700, letterSpacing: 1,
-      fontFamily: "'JetBrains Mono', monospace",
-      boxShadow: compact ? "none" : cfg.glow,
+      background: cfg.bg, border: `1px solid ${cfg.border}`,
+      color: cfg.color, borderRadius: 4, padding: pad,
+      fontSize: fs, fontWeight: 700, letterSpacing: "0.1em",
+      fontFamily: "monospace", whiteSpace: "nowrap",
+      boxShadow: `0 0 8px ${cfg.glow}`,
     }}>
-      {!compact && <span style={{ width: 5, height: 5, borderRadius: "50%", background: cfg.color, display: "inline-block" }} />}
-      {sev}
+      {cfg.label}
     </span>
   );
 }
 
-function StatCard({ label, value, sublabel, color, icon }) {
+// ─── Sparkline bar chart ────────────────────────────────────────────────────
+function MiniBarChart({ data }) {
+  const max = Math.max(...data.map(d => d.count), 1);
   return (
-    <div style={{
-      background: "linear-gradient(135deg, #111827 0%, #0d1520 100%)",
-      border: "1px solid rgba(255,255,255,0.06)",
-      borderRadius: 12, padding: "20px 22px",
-      position: "relative", overflow: "hidden",
-    }}>
-      <div style={{
-        position: "absolute", top: -20, right: -20,
-        width: 80, height: 80, borderRadius: "50%",
-        background: `radial-gradient(circle, ${color}20 0%, transparent 70%)`,
-      }} />
-      <div style={{ fontSize: 22, marginBottom: 8 }}>{icon}</div>
-      <div style={{ fontSize: 28, fontWeight: 700, color: "#fff", lineHeight: 1, marginBottom: 4, fontFamily: "'JetBrains Mono', monospace" }}>{value}</div>
-      <div style={{ fontSize: 11, color: "#9ca3af", letterSpacing: 0.5 }}>{label}</div>
-      {sublabel && <div style={{ fontSize: 10, color: color, marginTop: 6, letterSpacing: 0.5 }}>{sublabel}</div>}
+    <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 48 }}>
+      {data.slice(-24).map((d, i) => (
+        <div key={i} style={{
+          flex: 1, borderRadius: "2px 2px 0 0",
+          height: `${Math.max((d.count / max) * 100, 4)}%`,
+          background: d.count > 0
+            ? `rgba(0,200,255,${0.3 + (d.count / max) * 0.7})`
+            : "rgba(255,255,255,0.04)",
+          transition: "height 0.3s ease",
+          minWidth: 4,
+        }} />
+      ))}
     </div>
   );
 }
 
+// ─── Alert row ─────────────────────────────────────────────────────────────
 function AlertRow({ alert, onSelect, selected }) {
-  const sev = getSeverityFromLevel(alert.level);
-  const cfg = SEV_CONFIG[sev];
+  const cfg = SEVERITY_CONFIG[alert.analysis?.severity] || SEVERITY_CONFIG.INFO;
+  const isSelected = selected?.id === alert.id;
   return (
     <div onClick={() => onSelect(alert)} style={{
-      display: "grid", gridTemplateColumns: "80px 1fr 120px 80px 60px",
-      gap: 12, padding: "12px 20px", cursor: "pointer",
+      display: "grid", gridTemplateColumns: "120px 1fr 130px 100px 80px 32px",
+      alignItems: "center", gap: 16,
+      padding: "12px 20px", cursor: "pointer",
+      background: isSelected ? "rgba(0,200,255,0.06)" : "transparent",
+      borderLeft: isSelected ? "2px solid #00C8FF" : "2px solid transparent",
       borderBottom: "1px solid rgba(255,255,255,0.04)",
-      background: selected ? `${cfg.bg}` : "transparent",
-      borderLeft: selected ? `2px solid ${cfg.color}` : "2px solid transparent",
       transition: "all 0.15s ease",
-      alignItems: "center",
     }}
-      onMouseEnter={e => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
-      onMouseLeave={e => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+    onMouseEnter={e => { if (!isSelected) e.currentTarget.style.background = "rgba(255,255,255,0.02)"; }}
+    onMouseLeave={e => { if (!isSelected) e.currentTarget.style.background = "transparent"; }}
     >
-      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#00d4ff" }}>{alert.id}</div>
+      <SeverityBadge severity={alert.analysis?.severity} />
       <div>
-        <div style={{ fontSize: 12, color: "#e5e7eb", marginBottom: 3 }}>{alert.rule_description}</div>
-        <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace" }}>{alert.agent_name} · {alert.agent_ip}</div>
+        <div style={{ fontSize: 12, color: "#E5E7EB", marginBottom: 2, fontWeight: 500 }}>
+          {alert.rule_description}
+        </div>
+        <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace" }}>
+          Rule {alert.rule_id} · {alert.location}
+        </div>
       </div>
-      <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace" }}>{fmt(alert.timestamp)}</div>
-      <SeverityBadge level={alert.level} compact />
-      <div style={{
-        fontSize: 10, color: "#374151", fontFamily: "'JetBrains Mono', monospace",
-        background: "rgba(255,255,255,0.04)", borderRadius: 4, padding: "2px 6px", textAlign: "center"
-      }}>{alert.level}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Server size={11} color="#6B7280" />
+        <span style={{ fontSize: 11, color: "#9CA3AF", fontFamily: "monospace" }}>
+          {alert.agent_name}
+        </span>
+      </div>
+      <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace" }}>
+        {alert.agent_ip}
+      </div>
+      <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace" }}>
+        {timeAgo(alert.timestamp)}
+      </div>
+      <ChevronRight size={14} color={isSelected ? "#00C8FF" : "#374151"} />
     </div>
   );
 }
 
-function AIPanel({ alert, loading, result, onAnalyze }) {
+// ─── AI Analysis Panel ─────────────────────────────────────────────────────
+function AnalysisPanel({ alert, onClose }) {
   if (!alert) return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", color: "#374151", gap: 12, padding: 40 }}>
-      <div style={{ fontSize: 40 }}>✦</div>
-      <div style={{ fontSize: 13, textAlign: "center", color: "#4b5563", letterSpacing: 0.5, lineHeight: 1.6, fontFamily: "'JetBrains Mono', monospace" }}>
-        SELECT AN ALERT<br />TO RUN AI ANALYSIS
+    <div style={{
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      height: "100%", gap: 12, color: "#374151",
+    }}>
+      <Shield size={40} strokeWidth={1} color="#1F2937" />
+      <div style={{ fontSize: 12, fontFamily: "monospace", textAlign: "center", lineHeight: 1.6 }}>
+        SELECT AN ALERT<br />TO VIEW AI ANALYSIS
       </div>
     </div>
   );
 
-  const sev = result?.severity || getSeverityFromLevel(alert.level);
-  const cfg = SEV_CONFIG[sev];
+  const { analysis } = alert;
+  const cfg = SEVERITY_CONFIG[analysis?.severity] || SEVERITY_CONFIG.INFO;
 
   return (
-    <div style={{ height: "100%", display: "flex", flexDirection: "column", overflow: "hidden" }}>
+    <div style={{ height: "100%", overflowY: "auto", padding: "20px" }}>
       {/* Header */}
-      <div style={{ padding: "18px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
-          <div>
-            <div style={{ fontSize: 10, color: "#00d4ff", letterSpacing: 2, marginBottom: 4, fontFamily: "'JetBrains Mono', monospace" }}>AI ANALYSIS</div>
-            <div style={{ fontSize: 13, color: "#e5e7eb", fontWeight: 600 }}>{alert.id}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 6 }}>
+            AI THREAT ANALYSIS
           </div>
-          {result && <SeverityBadge level={result.severity} />}
+          <SeverityBadge severity={analysis?.severity} size="lg" />
         </div>
-        <div style={{ fontSize: 11, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace" }}>{alert.rule_description}</div>
+        <button onClick={onClose} style={{
+          background: "none", border: "none", color: "#6B7280", cursor: "pointer", padding: 4,
+        }}>
+          <X size={16} />
+        </button>
       </div>
 
-      {/* Body */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
-        {loading && (
-          <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", gap: 16 }}>
-            <div style={{
-              width: 40, height: 40, border: "2px solid rgba(0,212,255,0.2)",
-              borderTop: "2px solid #00d4ff", borderRadius: "50%",
-              animation: "spin 0.8s linear infinite"
-            }} />
-            <div style={{ fontSize: 11, color: "#00d4ff", letterSpacing: 2, fontFamily: "'JetBrains Mono', monospace" }}>ANALYZING THREAT...</div>
-          </div>
-        )}
+      {/* Alert meta */}
+      <div style={{
+        background: "rgba(255,255,255,0.02)", border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 8, padding: "12px 16px", marginBottom: 16,
+        fontFamily: "monospace", fontSize: 10,
+      }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
+          {[
+            ["AGENT", alert.agent_name],
+            ["IP", alert.agent_ip || "—"],
+            ["RULE ID", alert.rule_id],
+            ["RULE LEVEL", `${alert.rule_level}/15`],
+            ["LOCATION", alert.location || "—"],
+            ["CONFIDENCE", `${Math.round((analysis?.confidence || 0) * 100)}%`],
+          ].map(([k, v]) => (
+            <div key={k}>
+              <span style={{ color: "#4B5563" }}>{k}: </span>
+              <span style={{ color: "#9CA3AF" }}>{v}</span>
+            </div>
+          ))}
+        </div>
+      </div>
 
-        {!loading && !result && (
-          <div>
-            <div style={{ fontSize: 11, color: "#6b7280", marginBottom: 14, lineHeight: 1.6 }}>Raw log entry detected:</div>
-            <div style={{
-              background: "#060a0f", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 8,
-              padding: "12px 14px", fontFamily: "'JetBrains Mono', monospace",
-              fontSize: 10, color: "#22d3a5", lineHeight: 1.7, wordBreak: "break-all", marginBottom: 20
+      {/* Summary */}
+      <Section title="THREAT SUMMARY" color="#00C8FF">
+        <p style={{ fontSize: 13, color: "#D1D5DB", lineHeight: 1.7, margin: 0 }}>
+          {analysis?.summary}
+        </p>
+      </Section>
+
+      {/* Business impact */}
+      <Section title="BUSINESS IMPACT" color={cfg.color}>
+        <div style={{
+          background: cfg.bg, border: `1px solid ${cfg.border}`,
+          borderRadius: 6, padding: "10px 14px",
+        }}>
+          <p style={{ fontSize: 12, color: cfg.color, lineHeight: 1.6, margin: 0 }}>
+            {analysis?.business_impact}
+          </p>
+        </div>
+      </Section>
+
+      {/* Recommended actions */}
+      <Section title="RECOMMENDED ACTIONS" color="#22C55E">
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {analysis?.recommended_actions.map((action, i) => (
+            <div key={i} style={{
+              display: "flex", gap: 10, alignItems: "flex-start",
+              background: "rgba(34,197,94,0.05)", border: "1px solid rgba(34,197,94,0.12)",
+              borderRadius: 6, padding: "8px 12px",
             }}>
-              {alert.full_log}
+              <div style={{
+                minWidth: 18, height: 18, borderRadius: "50%",
+                background: "rgba(34,197,94,0.15)", border: "1px solid rgba(34,197,94,0.3)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontSize: 9, color: "#22C55E", fontWeight: 700, fontFamily: "monospace",
+              }}>
+                {i + 1}
+              </div>
+              <span style={{ fontSize: 12, color: "#D1D5DB", lineHeight: 1.5 }}>{action}</span>
             </div>
-            <button onClick={onAnalyze} style={{
-              width: "100%", padding: "12px", borderRadius: 8, border: "none", cursor: "pointer",
-              background: "linear-gradient(135deg, #0066ff, #00d4ff)",
-              color: "#fff", fontSize: 12, fontWeight: 700, letterSpacing: 1,
-              fontFamily: "'JetBrains Mono', monospace",
-              boxShadow: "0 0 20px rgba(0,212,255,0.3)",
-              transition: "all 0.2s ease",
-            }}>
-              ✦ RUN AI ANALYSIS
-            </button>
+          ))}
+        </div>
+      </Section>
+    </div>
+  );
+}
+
+function Section({ title, color, children }) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{
+        fontSize: 9, color, letterSpacing: "0.15em", fontFamily: "monospace",
+        fontWeight: 700, marginBottom: 10, display: "flex", alignItems: "center", gap: 6,
+      }}>
+        <div style={{ width: 12, height: 1, background: color, opacity: 0.5 }} />
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+// ─── Dashboard overview ────────────────────────────────────────────────────
+function DashboardView({ alerts }) {
+  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  alerts.forEach(a => {
+    const s = a.analysis?.severity;
+    if (s && counts[s] !== undefined) counts[s]++;
+  });
+  const agents = [...new Set(alerts.map(a => a.agent_name))];
+
+  // Fake hourly data
+  const hourly = Array.from({ length: 24 }, (_, i) => ({
+    hour: i,
+    count: Math.floor(Math.random() * 8) + (i > 12 && i < 16 ? 10 : 0),
+  }));
+  hourly[22].count = 12; hourly[21].count = 9;
+
+  const topRules = Object.entries(
+    alerts.reduce((acc, a) => {
+      const k = a.rule_description;
+      acc[k] = (acc[k] || 0) + 1;
+      return acc;
+    }, {})
+  ).sort((a, b) => b[1] - a[1]).slice(0, 5);
+
+  return (
+    <div>
+      {/* Stat cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 16, marginBottom: 24 }}>
+        <StatCard label="TOTAL · 24H" value={alerts.length} color="#00C8FF" icon={Activity} sublabel="All severity levels" />
+        <StatCard label="CRITICAL" value={counts.CRITICAL} color="#FF3B3B" icon={AlertTriangle} sublabel="Immediate response" />
+        <StatCard label="HIGH" value={counts.HIGH} color="#FF8C00" icon={Shield} sublabel="Urgent review" />
+        <StatCard label="ACTIVE AGENTS" value={agents.length} color="#22C55E" icon={Server} sublabel="Reporting endpoints" />
+      </div>
+
+      {/* Chart + top rules */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <div style={{
+          background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+          borderRadius: 12, padding: 20,
+        }}>
+          <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 16 }}>
+            ALERT VOLUME · LAST 24H
           </div>
-        )}
+          <MiniBarChart data={hourly} />
+          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 9, color: "#374151", fontFamily: "monospace" }}>
+            <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>NOW</span>
+          </div>
+        </div>
 
-        {!loading && result && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            {/* Summary */}
-            <div style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: 14, border: "1px solid rgba(255,255,255,0.05)" }}>
-              <div style={{ fontSize: 9, color: "#00d4ff", letterSpacing: 2, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" }}>THREAT SUMMARY</div>
-              <div style={{ fontSize: 12, color: "#d1d5db", lineHeight: 1.7 }}>{result.summary}</div>
-            </div>
-
-            {/* Business Impact */}
-            <div style={{ background: `${cfg.bg}`, borderRadius: 8, padding: 14, border: `1px solid ${cfg.color}25` }}>
-              <div style={{ fontSize: 9, color: cfg.color, letterSpacing: 2, marginBottom: 8, fontFamily: "'JetBrains Mono', monospace" }}>BUSINESS IMPACT</div>
-              <div style={{ fontSize: 12, color: "#d1d5db", lineHeight: 1.7 }}>{result.business_impact}</div>
-            </div>
-
-            {/* Actions */}
-            <div>
-              <div style={{ fontSize: 9, color: "#22d3a5", letterSpacing: 2, marginBottom: 10, fontFamily: "'JetBrains Mono', monospace" }}>RECOMMENDED ACTIONS</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {result.recommended_action.map((action, i) => (
-                  <div key={i} style={{
-                    display: "flex", gap: 10, alignItems: "flex-start",
-                    background: "rgba(34,211,165,0.04)", borderRadius: 6, padding: "10px 12px",
-                    border: "1px solid rgba(34,211,165,0.1)",
-                  }}>
-                    <span style={{ color: "#22d3a5", fontFamily: "'JetBrains Mono', monospace", fontSize: 10, flexShrink: 0, marginTop: 1 }}>{String(i + 1).padStart(2, "0")}</span>
-                    <span style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.6 }}>{action}</span>
-                  </div>
-                ))}
+        <div style={{
+          background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+          borderRadius: 12, padding: 20,
+        }}>
+          <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 16 }}>
+            TOP TRIGGERED RULES
+          </div>
+          {topRules.map(([desc, count], i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: 11, color: "#9CA3AF", flex: 1, marginRight: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {desc}
+              </div>
+              <div style={{
+                fontSize: 10, color: "#00C8FF", fontFamily: "monospace",
+                background: "rgba(0,200,255,0.08)", padding: "2px 8px", borderRadius: 4,
+              }}>
+                {count}x
               </div>
             </div>
+          ))}
+        </div>
+      </div>
 
-            <button onClick={() => { }} style={{
-              padding: "10px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)",
-              background: "transparent", color: "#6b7280", fontSize: 11, cursor: "pointer",
-              fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1
-            }}>
-              ↺ RE-ANALYZE
-            </button>
-          </div>
-        )}
+      {/* Severity distribution */}
+      <div style={{
+        background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+        borderRadius: 12, padding: 20,
+      }}>
+        <div style={{ fontSize: 10, color: "#4B5563", fontFamily: "monospace", letterSpacing: "0.1em", marginBottom: 16 }}>
+          SEVERITY DISTRIBUTION
+        </div>
+        <div style={{ display: "flex", gap: 8, height: 8, borderRadius: 4, overflow: "hidden", marginBottom: 12 }}>
+          {Object.entries(counts).map(([sev, count]) => {
+            const pct = (count / alerts.length) * 100;
+            return (
+              <div key={sev} style={{
+                flex: pct, background: SEVERITY_CONFIG[sev]?.color,
+                opacity: 0.8, minWidth: count > 0 ? 4 : 0,
+              }} />
+            );
+          })}
+        </div>
+        <div style={{ display: "flex", gap: 20 }}>
+          {Object.entries(counts).map(([sev, count]) => (
+            <div key={sev} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{ width: 8, height: 8, borderRadius: "50%", background: SEVERITY_CONFIG[sev]?.color }} />
+              <span style={{ fontSize: 10, color: "#6B7280", fontFamily: "monospace" }}>{sev} · {count}</span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );
 }
 
-function DevicesPage({ alerts }) {
-  const agents = [...new Set(alerts.map(a => a.agent_name))].map(name => {
-    const agentAlerts = alerts.filter(a => a.agent_name === name);
-    const maxLevel = Math.max(...agentAlerts.map(a => a.level));
-    const ip = agentAlerts[0].agent_ip;
-    return { name, ip, alertCount: agentAlerts.length, maxLevel };
+// ─── Devices view ──────────────────────────────────────────────────────────
+function DevicesView({ alerts }) {
+  const deviceMap = {};
+  alerts.forEach(a => {
+    if (!deviceMap[a.agent_name]) {
+      deviceMap[a.agent_name] = { name: a.agent_name, ip: a.agent_ip, count: 0, severities: [] };
+    }
+    deviceMap[a.agent_name].count++;
+    if (a.analysis?.severity) deviceMap[a.agent_name].severities.push(a.analysis.severity);
   });
 
+  const devices = Object.values(deviceMap).map(d => ({
+    ...d,
+    topSeverity: ["CRITICAL","HIGH","MEDIUM","LOW","INFO"].find(s => d.severities.includes(s)) || "INFO",
+  }));
+
   return (
-    <div style={{ padding: 28 }}>
-      <div style={{ marginBottom: 24 }}>
-        <div style={{ fontSize: 11, color: "#00d4ff", letterSpacing: 3, marginBottom: 6, fontFamily: "'JetBrains Mono', monospace" }}>DEVICE INVENTORY</div>
-        <div style={{ fontSize: 22, color: "#fff", fontWeight: 700 }}>Monitored Systems</div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 16 }}>
-        {agents.map(agent => {
-          const sev = getSeverityFromLevel(agent.maxLevel);
-          const cfg = SEV_CONFIG[sev];
-          return (
-            <div key={agent.name} style={{
-              background: "linear-gradient(135deg, #111827, #0d1520)",
-              border: `1px solid ${cfg.color}30`, borderRadius: 12, padding: 20,
-              boxShadow: `0 0 20px ${cfg.color}10`,
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-                <div style={{ fontSize: 28 }}>{agent.name.includes("workstation") ? "💻" : agent.name.includes("db") ? "🗄️" : "🖥️"}</div>
-                <SeverityBadge level={agent.maxLevel} compact />
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 16 }}>
+      {devices.map(device => {
+        const cfg = SEVERITY_CONFIG[device.topSeverity];
+        return (
+          <div key={device.name} style={{
+            background: "#0D0F14", border: `1px solid ${cfg.border}`,
+            borderRadius: 12, padding: 20,
+            boxShadow: `0 0 20px ${cfg.glow}20`,
+          }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+              <div style={{
+                width: 40, height: 40, borderRadius: 10,
+                background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}>
+                <Server size={18} color="#6B7280" />
               </div>
-              <div style={{ fontSize: 13, color: "#e5e7eb", fontWeight: 600, marginBottom: 4 }}>{agent.name}</div>
-              <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace", marginBottom: 14 }}>{agent.ip}</div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#9ca3af" }}>
-                <span>{agent.alertCount} alert{agent.alertCount !== 1 ? "s" : ""}</span>
-                <span style={{ color: "#22d3a5" }}>● ONLINE</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 9, fontFamily: "monospace" }}>
+                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#22C55E", boxShadow: "0 0 6px #22C55E" }} />
+                <span style={{ color: "#22C55E" }}>ACTIVE</span>
               </div>
             </div>
-          );
-        })}
-      </div>
+            <div style={{ fontSize: 14, color: "#E5E7EB", fontWeight: 600, fontFamily: "monospace", marginBottom: 4 }}>
+              {device.name}
+            </div>
+            <div style={{ fontSize: 11, color: "#4B5563", fontFamily: "monospace", marginBottom: 16 }}>
+              {device.ip || "IP unknown"}
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div>
+                <div style={{ fontSize: 9, color: "#4B5563", fontFamily: "monospace", marginBottom: 4 }}>ALERTS</div>
+                <div style={{ fontSize: 24, fontWeight: 700, color: cfg.color, fontFamily: "monospace" }}>{device.count}</div>
+              </div>
+              <SeverityBadge severity={device.topSeverity} />
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-// ─── Main App ────────────────────────────────────────────────────────────────
+// ─── Main App ──────────────────────────────────────────────────────────────
 export default function SOCDashboard() {
-  const [page, setPage] = useState("dashboard");
+  const [activeView, setActiveView] = useState("dashboard");
+  const [alerts, setAlerts] = useState(MOCK_ALERTS);
   const [selectedAlert, setSelectedAlert] = useState(null);
-  const [aiResults, setAiResults] = useState({});
-  const [aiLoading, setAiLoading] = useState(false);
   const [search, setSearch] = useState("");
-  const [filterSev, setFilterSev] = useState("ALL");
-  const [liveAlerts, setLiveAlerts] = useState(MOCK_ALERTS);
+  const [filterSeverity, setFilterSeverity] = useState(null);
+  const [syncing, setSyncing] = useState(false);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [tick, setTick] = useState(0);
 
-  // Simulate incoming alert
+  // Live clock tick for "X ago" labels
   useEffect(() => {
-    const t = setTimeout(() => {
-      const newAlert = {
-        id: "ALT-007",
-        timestamp: new Date().toISOString(),
-        rule_id: "60122",
-        rule_description: "Privilege escalation via SUID binary",
-        agent_name: "prod-web-01",
-        agent_ip: "10.0.1.45",
-        level: 13,
-        groups: ["privilege", "linux"],
-        full_log: "/usr/bin/python3 -c 'import os; os.setuid(0); os.system(\"/bin/bash\")'",
-      };
-      setLiveAlerts(prev => [newAlert, ...prev]);
-    }, 5000);
-    return () => clearTimeout(t);
+    const t = setInterval(() => setTick(n => n + 1), 30000);
+    return () => clearInterval(t);
   }, []);
 
-  function handleAnalyze() {
-    if (!selectedAlert) return;
-    setAiLoading(true);
-    setTimeout(() => {
-      setAiResults(prev => ({ ...prev, [selectedAlert.id]: AI_RESPONSES[selectedAlert.id] || AI_RESPONSES["ALT-006"] }));
-      setAiLoading(false);
-    }, 1800);
-  }
+  const handleSync = useCallback(async () => {
+    setSyncing(true);
+    await new Promise(r => setTimeout(r, 1800));
+    setSyncing(false);
+  }, []);
 
-  const filtered = liveAlerts.filter(a => {
-    const matchSearch = a.rule_description.toLowerCase().includes(search.toLowerCase()) ||
+  const filtered = alerts.filter(a => {
+    const matchSearch = !search ||
+      a.rule_description.toLowerCase().includes(search.toLowerCase()) ||
       a.agent_name.toLowerCase().includes(search.toLowerCase()) ||
-      a.id.toLowerCase().includes(search.toLowerCase());
-    const matchSev = filterSev === "ALL" || getSeverityFromLevel(a.level) === filterSev;
+      (a.analysis?.summary || "").toLowerCase().includes(search.toLowerCase());
+    const matchSev = !filterSeverity || a.analysis?.severity === filterSeverity;
     return matchSearch && matchSev;
   });
 
-  const critCount = liveAlerts.filter(a => getSeverityFromLevel(a.level) === "CRITICAL").length;
-  const highCount = liveAlerts.filter(a => getSeverityFromLevel(a.level) === "HIGH").length;
+  const panelWidth = selectedAlert ? 400 : 0;
 
   return (
     <div style={{
-      display: "flex", height: "100vh", background: "#080c12",
-      color: "#e5e7eb", fontFamily: "'Inter', 'Segoe UI', sans-serif",
-      overflow: "hidden",
+      display: "flex", minHeight: "100vh",
+      background: "#080A0E", color: "#E5E7EB",
+      fontFamily: "'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace",
     }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap');
-        * { box-sizing: border-box; margin: 0; padding: 0; }
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&display=swap');
+        * { box-sizing: border-box; }
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 2px; }
-        @keyframes ping { 0% { transform: scale(1); opacity: 0.5; } 75%, 100% { transform: scale(2); opacity: 0; } }
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
-        @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
+        @keyframes pulse-dot { 0%,100%{opacity:1} 50%{opacity:0.3} }
+        @keyframes slide-in { from{opacity:0;transform:translateX(20px)} to{opacity:1;transform:translateX(0)} }
+        @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
+        @keyframes glow-pulse { 0%,100%{box-shadow:0 0 4px rgba(0,200,255,0.3)} 50%{box-shadow:0 0 16px rgba(0,200,255,0.6)} }
       `}</style>
 
-      <Sidebar page={page} setPage={setPage} alertCount={critCount + highCount} />
+      <Sidebar activeView={activeView} setActiveView={setActiveView} />
 
-      <main style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
+      {/* Main content */}
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Topbar */}
-        <div style={{
-          height: 56, borderBottom: "1px solid rgba(255,255,255,0.05)",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          padding: "0 24px", background: "rgba(8,12,18,0.9)", backdropFilter: "blur(10px)",
-          flexShrink: 0,
+        <header style={{
+          height: 56, display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "0 24px", borderBottom: "1px solid rgba(255,255,255,0.06)",
+          background: "#0A0C10",
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            <div style={{ fontSize: 12, color: "#9ca3af" }}>
-              {page === "dashboard" && "Overview"}
-              {page === "alerts" && "Alert Feed"}
-              {page === "analysis" && "AI Analysis"}
-              {page === "devices" && "Devices"}
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#E5E7EB", letterSpacing: "0.05em" }}>
+              {activeView === "dashboard" && "OVERVIEW"}
+              {activeView === "alerts" && "ALERT FEED"}
+              {activeView === "devices" && "DEVICE INVENTORY"}
+              {activeView === "analysis" && "AI ANALYSIS"}
             </div>
-            {critCount > 0 && (
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{
+              display: "flex", alignItems: "center", gap: 6,
+              fontSize: 10, color: "#4B5563",
+            }}>
               <div style={{
-                display: "flex", alignItems: "center", gap: 6,
-                background: "rgba(255,59,92,0.1)", border: "1px solid rgba(255,59,92,0.3)",
-                borderRadius: 20, padding: "4px 10px", fontSize: 10, color: "#ff3b5c",
-                fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.5,
-                animation: "pulse 2s ease-in-out infinite",
+                width: 6, height: 6, borderRadius: "50%", background: "#22C55E",
+                animation: "pulse-dot 2s infinite",
+              }} />
+              LIVE
+            </div>
+            <button onClick={handleSync} style={{
+              display: "flex", alignItems: "center", gap: 6,
+              background: "rgba(0,200,255,0.08)", border: "1px solid rgba(0,200,255,0.2)",
+              borderRadius: 6, padding: "6px 12px", color: "#00C8FF",
+              fontSize: 10, cursor: "pointer", letterSpacing: "0.08em",
+              animation: syncing ? "glow-pulse 1s infinite" : "none",
+            }}>
+              <RefreshCw size={11} style={{ animation: syncing ? "spin 1s linear infinite" : "none" }} />
+              {syncing ? "SYNCING..." : "SYNC WAZUH"}
+            </button>
+          </div>
+        </header>
+
+        {/* Body */}
+        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: 24 }}>
+
+            {activeView === "dashboard" && <DashboardView alerts={alerts} />}
+
+            {activeView === "devices" && <DevicesView alerts={alerts} />}
+
+            {activeView === "analysis" && (
+              <div style={{
+                background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 12, padding: 32, textAlign: "center",
               }}>
-                <PulsingDot color="#ff3b5c" />
-                {critCount} CRITICAL THREAT{critCount !== 1 ? "S" : ""}
+                <Zap size={40} color="#00C8FF" strokeWidth={1} style={{ marginBottom: 16 }} />
+                <div style={{ fontSize: 13, color: "#6B7280", lineHeight: 1.8 }}>
+                  Select an alert from the <strong style={{ color: "#9CA3AF" }}>Alert Feed</strong> to view full AI analysis.<br />
+                  Each alert is analysed by GPT-4o mini with structured threat intelligence output.
+                </div>
               </div>
             )}
-          </div>
-          <div style={{ fontSize: 10, color: "#4b5563", fontFamily: "'JetBrains Mono', monospace" }}>
-            {new Date().toLocaleString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false })} UTC
-          </div>
-        </div>
 
-        {/* Content */}
-        <div style={{ flex: 1, overflow: "hidden" }}>
-
-          {/* DASHBOARD PAGE */}
-          {page === "dashboard" && (
-            <div style={{ height: "100%", overflowY: "auto", padding: 28 }}>
-              <div style={{ marginBottom: 28 }}>
-                <div style={{ fontSize: 11, color: "#00d4ff", letterSpacing: 3, marginBottom: 6, fontFamily: "'JetBrains Mono', monospace" }}>THREAT OVERVIEW</div>
-                <div style={{ fontSize: 22, color: "#fff", fontWeight: 700 }}>Security Dashboard</div>
-              </div>
-
-              {/* Stat cards */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 28 }}>
-                <StatCard label="Total Alerts" value={liveAlerts.length} sublabel="↑ 3 in last hour" color="#00d4ff" icon="◈" />
-                <StatCard label="Critical" value={critCount} sublabel="Immediate action" color="#ff3b5c" icon="⚠" />
-                <StatCard label="High Severity" value={highCount} sublabel="Review today" color="#ff8c00" icon="◉" />
-                <StatCard label="Agents Online" value={6} sublabel="All healthy" color="#22d3a5" icon="⬡" />
-              </div>
-
-              {/* Recent alerts preview */}
-              <div style={{
-                background: "linear-gradient(135deg, #111827, #0d1520)",
-                border: "1px solid rgba(255,255,255,0.06)", borderRadius: 12, overflow: "hidden"
-              }}>
-                <div style={{ padding: "16px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ fontSize: 12, color: "#9ca3af", fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1 }}>RECENT ALERTS</div>
-                  <button onClick={() => setPage("alerts")} style={{ fontSize: 10, color: "#00d4ff", background: "none", border: "none", cursor: "pointer", fontFamily: "'JetBrains Mono', monospace" }}>
-                    VIEW ALL →
-                  </button>
-                </div>
-                <div>
-                  {liveAlerts.slice(0, 4).map(a => (
-                    <div key={a.id} onClick={() => { setPage("alerts"); setSelectedAlert(a); }} style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "12px 20px", borderBottom: "1px solid rgba(255,255,255,0.03)",
-                      cursor: "pointer", transition: "background 0.15s",
-                    }}
-                      onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.02)"}
-                      onMouseLeave={e => e.currentTarget.style.background = "transparent"}
-                    >
-                      <div>
-                        <div style={{ fontSize: 12, color: "#e5e7eb", marginBottom: 2 }}>{a.rule_description}</div>
-                        <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace" }}>{a.agent_name} · {fmt(a.timestamp)}</div>
-                      </div>
-                      <SeverityBadge level={a.level} compact />
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ALERTS PAGE */}
-          {page === "alerts" && (
-            <div style={{ height: "100%", display: "flex", overflow: "hidden" }}>
-              {/* Left: Alert table */}
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", borderRight: "1px solid rgba(255,255,255,0.05)" }}>
-                {/* Filters */}
-                <div style={{ padding: "14px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
-                  <input
-                    value={search} onChange={e => setSearch(e.target.value)}
-                    placeholder="Search alerts..."
-                    style={{
-                      flex: 1, background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.08)",
-                      borderRadius: 8, padding: "8px 12px", color: "#e5e7eb", fontSize: 12, outline: "none",
-                    }}
-                  />
-                  {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map(s => (
-                    <button key={s} onClick={() => setFilterSev(s)} style={{
-                      padding: "6px 10px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 9,
-                      fontFamily: "'JetBrains Mono', monospace", letterSpacing: 0.5, fontWeight: 700,
-                      background: filterSev === s ? (SEV_CONFIG[s]?.bg || "rgba(0,212,255,0.15)") : "rgba(255,255,255,0.04)",
-                      color: filterSev === s ? (SEV_CONFIG[s]?.color || "#00d4ff") : "#4b5563",
-                      border: filterSev === s ? `1px solid ${SEV_CONFIG[s]?.color || "#00d4ff"}40` : "1px solid transparent",
-                    }}>{s}</button>
-                  ))}
+            {activeView === "alerts" && (
+              <div>
+                {/* Search + filter bar */}
+                <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
+                  <div style={{ flex: 1, position: "relative" }}>
+                    <Search size={13} color="#4B5563" style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)" }} />
+                    <input
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      placeholder="Search alerts, agents, descriptions..."
+                      style={{
+                        width: "100%", background: "#0D0F14",
+                        border: "1px solid rgba(255,255,255,0.08)",
+                        borderRadius: 8, padding: "9px 12px 9px 34px",
+                        color: "#E5E7EB", fontSize: 12, outline: "none",
+                        fontFamily: "monospace",
+                      }}
+                    />
+                  </div>
+                  {["CRITICAL","HIGH","MEDIUM","LOW"].map(sev => {
+                    const cfg = SEVERITY_CONFIG[sev];
+                    const active = filterSeverity === sev;
+                    return (
+                      <button key={sev} onClick={() => setFilterSeverity(active ? null : sev)} style={{
+                        background: active ? cfg.bg : "rgba(255,255,255,0.02)",
+                        border: `1px solid ${active ? cfg.border : "rgba(255,255,255,0.08)"}`,
+                        color: active ? cfg.color : "#6B7280",
+                        borderRadius: 6, padding: "6px 12px",
+                        fontSize: 9, fontWeight: 700, cursor: "pointer",
+                        letterSpacing: "0.1em", fontFamily: "monospace",
+                        boxShadow: active ? `0 0 8px ${cfg.glow}` : "none",
+                        transition: "all 0.15s",
+                      }}>
+                        {sev}
+                      </button>
+                    );
+                  })}
                 </div>
 
                 {/* Table header */}
                 <div style={{
-                  display: "grid", gridTemplateColumns: "80px 1fr 120px 80px 60px",
-                  gap: 12, padding: "8px 20px",
-                  fontSize: 9, color: "#4b5563", fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1,
-                  borderBottom: "1px solid rgba(255,255,255,0.04)", flexShrink: 0,
+                  display: "grid", gridTemplateColumns: "120px 1fr 130px 100px 80px 32px",
+                  gap: 16, padding: "8px 20px",
+                  fontSize: 9, color: "#374151", letterSpacing: "0.1em", fontWeight: 700,
+                  borderBottom: "1px solid rgba(255,255,255,0.06)",
                 }}>
-                  <div>ID</div><div>DESCRIPTION</div><div>TIME</div><div>SEVERITY</div><div>LEVEL</div>
+                  <span>SEVERITY</span><span>DESCRIPTION</span><span>AGENT</span>
+                  <span>IP</span><span>TIME</span><span></span>
                 </div>
 
-                {/* Rows */}
-                <div style={{ flex: 1, overflowY: "auto" }}>
-                  {filtered.map((a, i) => (
-                    <div key={a.id} style={{ animation: `slideIn 0.2s ease ${i * 0.03}s both` }}>
-                      <AlertRow alert={a} onSelect={al => { setSelectedAlert(al); setPage("alerts"); }} selected={selectedAlert?.id === a.id} />
+                {/* Alert rows */}
+                <div style={{
+                  background: "#0D0F14", border: "1px solid rgba(255,255,255,0.06)",
+                  borderRadius: 12, overflow: "hidden",
+                }}>
+                  {filtered.length === 0 ? (
+                    <div style={{ padding: 40, textAlign: "center", color: "#374151", fontSize: 12 }}>
+                      No alerts match your filters
                     </div>
-                  ))}
+                  ) : (
+                    filtered.map(alert => (
+                      <AlertRow
+                        key={alert.id}
+                        alert={alert}
+                        onSelect={a => { setSelectedAlert(a); setActiveView("alerts"); }}
+                        selected={selectedAlert}
+                      />
+                    ))
+                  )}
+                </div>
+
+                <div style={{ fontSize: 10, color: "#374151", marginTop: 12, fontFamily: "monospace" }}>
+                  Showing {filtered.length} of {alerts.length} alerts
                 </div>
               </div>
+            )}
+          </div>
 
-              {/* Right: AI Panel */}
-              <div style={{ width: 360, background: "linear-gradient(180deg, #0d1117, #0a0e13)", flexShrink: 0 }}>
-                <AIPanel
-                  alert={selectedAlert}
-                  loading={aiLoading}
-                  result={selectedAlert ? aiResults[selectedAlert.id] : null}
-                  onAnalyze={handleAnalyze}
-                />
-              </div>
+          {/* AI Panel (slides in) */}
+          {selectedAlert && (
+            <div style={{
+              width: 420, borderLeft: "1px solid rgba(255,255,255,0.06)",
+              background: "#0A0C10", overflowY: "auto",
+              animation: "slide-in 0.2s ease",
+            }}>
+              <AnalysisPanel alert={selectedAlert} onClose={() => setSelectedAlert(null)} />
             </div>
           )}
-
-          {/* ANALYSIS PAGE */}
-          {page === "analysis" && (
-            <div style={{ height: "100%", overflowY: "auto", padding: 28 }}>
-              <div style={{ marginBottom: 24 }}>
-                <div style={{ fontSize: 11, color: "#00d4ff", letterSpacing: 3, marginBottom: 6, fontFamily: "'JetBrains Mono', monospace" }}>AI ANALYSIS</div>
-                <div style={{ fontSize: 22, color: "#fff", fontWeight: 700 }}>Threat Intelligence</div>
-              </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
-                {liveAlerts.slice(0, 5).map(alert => {
-                  const sev = getSeverityFromLevel(alert.level);
-                  const cfg = SEV_CONFIG[sev];
-                  const hasResult = !!aiResults[alert.id];
-                  return (
-                    <div key={alert.id} style={{
-                      background: "linear-gradient(135deg, #111827, #0d1520)",
-                      border: `1px solid ${hasResult ? cfg.color + "40" : "rgba(255,255,255,0.06)"}`,
-                      borderRadius: 12, padding: 20,
-                      boxShadow: hasResult ? `0 0 20px ${cfg.color}10` : "none",
-                    }}>
-                      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-                        <span style={{ fontSize: 10, color: "#00d4ff", fontFamily: "'JetBrains Mono', monospace" }}>{alert.id}</span>
-                        <SeverityBadge level={alert.level} compact />
-                      </div>
-                      <div style={{ fontSize: 12, color: "#e5e7eb", marginBottom: 8, lineHeight: 1.5 }}>{alert.rule_description}</div>
-                      <div style={{ fontSize: 10, color: "#6b7280", fontFamily: "'JetBrains Mono', monospace", marginBottom: 16 }}>{alert.agent_name}</div>
-                      {hasResult ? (
-                        <div style={{ fontSize: 11, color: "#9ca3af", lineHeight: 1.6 }}>
-                          {aiResults[alert.id]?.summary?.slice(0, 120)}...
-                          <div style={{ marginTop: 10, fontSize: 10, color: "#22d3a5" }}>✓ Analyzed · {aiResults[alert.id]?.recommended_action?.length} actions</div>
-                        </div>
-                      ) : (
-                        <button onClick={() => { setSelectedAlert(alert); handleAnalyze(); }} style={{
-                          width: "100%", padding: "8px", borderRadius: 6,
-                          background: "rgba(0,212,255,0.08)", border: "1px solid rgba(0,212,255,0.2)",
-                          color: "#00d4ff", fontSize: 10, cursor: "pointer", fontFamily: "'JetBrains Mono', monospace"
-                        }}>✦ ANALYZE</button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          )}
-
-          {/* DEVICES PAGE */}
-          {page === "devices" && <DevicesPage alerts={liveAlerts} />}
         </div>
-      </main>
+      </div>
     </div>
   );
 }
