@@ -1,4 +1,4 @@
-# Ai-powered-SOC-Dasboard
+# Ai-powered-SOC-Dasboard.
 PROJECT STRUCTURE ───────────────────────────────────────────────────────
 soc-dashboard/
 ├── backend/                        # FastAPI (deploy to Railway / Render / EC2)
